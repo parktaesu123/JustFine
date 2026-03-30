@@ -777,6 +777,7 @@ def sync_to_notion(
     aliases: Dict[str, str],
     endpoints: List[Endpoint],
     archive_missing: bool,
+    force_update: bool,
 ) -> None:
     existing_rows = extract_existing_pages(client, database_id, aliases)
     by_endpoint_id = {r.endpoint_id: r for r in existing_rows if r.endpoint_id}
@@ -793,7 +794,7 @@ def sync_to_notion(
 
         if row:
             seen_page_ids.add(row.page_id)
-            if row.spec_hash and row.spec_hash == ep.spec_hash:
+            if (not force_update) and row.spec_hash and row.spec_hash == ep.spec_hash:
                 skipped += 1
                 print(f"[skip] unchanged {ep.endpoint_key}")
                 continue
@@ -1071,6 +1072,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
         aliases=aliases,
         endpoints=endpoints,
         archive_missing=args.archive_missing,
+        force_update=args.force,
     )
 
 
@@ -1128,6 +1130,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--property-map", help="JSON file mapping logical fields to Notion property names")
     sync.add_argument("--dry-run", action="store_true", help="Scan only and print extracted endpoints")
     sync.add_argument("--archive-missing", action="store_true", help="Archive Notion rows no longer in code")
+    sync.add_argument("--force", action="store_true", help="Force update all endpoints even if unchanged")
     sync.set_defaults(func=cmd_sync)
 
     config_show = sub.add_parser("config", help="Show saved local config")

@@ -21,6 +21,12 @@ justfine-api-sync /login --notion-token "실제_ntn_토큰"
 justfine-api-sync /sync --archive-missing
 ```
 
+기존 명세를 새 포맷으로 강제 재반영할 때:
+
+```bash
+justfine-api-sync /sync --archive-missing --force
+```
+
 ## 생성되는 핵심 컬럼 (깔끔 모드)
 
 - `API Name`
