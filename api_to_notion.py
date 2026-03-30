@@ -219,7 +219,7 @@ def resolve_setting(cli_value: Optional[str], env_key: str, cfg_key: str) -> Opt
 
 
 def prompt_secret(label: str) -> str:
-    value = input(f"{label}: ").strip()
+    value = sanitize_user_text(input(f"{label}: "))
     if not value:
         raise RuntimeError(f"{label} is required")
     return value
@@ -227,8 +227,17 @@ def prompt_secret(label: str) -> str:
 
 def prompt_optional(label: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
-    value = input(f"{label}{suffix}: ").strip()
+    value = sanitize_user_text(input(f"{label}{suffix}: "))
     return value or default
+
+
+def sanitize_user_text(value: str) -> str:
+    if value is None:
+        return ""
+    cleaned = value.replace("\ufeff", "").strip()
+    # Drop broken surrogate characters that can appear during terminal paste.
+    cleaned = cleaned.encode("utf-8", "ignore").decode("utf-8", "ignore")
+    return cleaned
 
 
 def pick_from_results(title: str, results: List[dict]) -> dict:
@@ -858,6 +867,9 @@ def cmd_login(args: argparse.Namespace) -> None:
     client_id = resolve_setting(args.client_id, "NOTION_CLIENT_ID", "client_id")
     client_secret = resolve_setting(args.client_secret, "NOTION_CLIENT_SECRET", "client_secret")
     redirect_uri = resolve_setting(args.redirect_uri, "NOTION_REDIRECT_URI", "redirect_uri") or "http://127.0.0.1:8765/callback"
+    client_id = sanitize_user_text(client_id or "")
+    client_secret = sanitize_user_text(client_secret or "")
+    redirect_uri = sanitize_user_text(redirect_uri)
 
     if not client_id or not client_secret:
         print("[login] first-time setup: open Notion integration page.")
@@ -868,6 +880,11 @@ def cmd_login(args: argparse.Namespace) -> None:
             client_id = prompt_secret("Paste NOTION_CLIENT_ID")
         if not client_secret:
             client_secret = prompt_secret("Paste NOTION_CLIENT_SECRET")
+
+    if len(client_id) < 10:
+        raise RuntimeError("Invalid NOTION_CLIENT_ID format. Copy the exact client id from Notion integration settings.")
+    if len(client_secret) < 20:
+        raise RuntimeError("Invalid NOTION_CLIENT_SECRET format. Copy the exact client secret from Notion integration settings.")
 
     parsed = urlparse(redirect_uri)
     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost") or not parsed.port:
