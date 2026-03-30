@@ -864,6 +864,17 @@ def _run_local_callback_server(host: str, port: int, timeout_seconds: int) -> Tu
 
 
 def cmd_login(args: argparse.Namespace) -> None:
+    direct_token = sanitize_user_text(resolve_setting(getattr(args, "notion_token", None), "NOTION_TOKEN", "notion_token") or "")
+    if direct_token:
+        if not direct_token.startswith("ntn_"):
+            raise RuntimeError("Invalid NOTION_TOKEN format. It should start with 'ntn_'.")
+        update_config({"notion_token": direct_token, "updated_at": datetime.now(timezone.utc).isoformat()})
+        print("[login] token saved.")
+        if not getattr(args, "no_connect", False):
+            print("[login] starting database setup...")
+            cmd_connect(args)
+        return
+
     client_id = resolve_setting(args.client_id, "NOTION_CLIENT_ID", "client_id")
     client_secret = resolve_setting(args.client_secret, "NOTION_CLIENT_SECRET", "client_secret")
     redirect_uri = resolve_setting(args.redirect_uri, "NOTION_REDIRECT_URI", "redirect_uri") or "http://127.0.0.1:8765/callback"
@@ -872,6 +883,18 @@ def cmd_login(args: argparse.Namespace) -> None:
     redirect_uri = sanitize_user_text(redirect_uri)
 
     if not client_id or not client_secret:
+        mode = prompt_optional("Login mode (token/oauth)", "token").lower()
+        if mode in ("token", "t", "1", ""):
+            notion_token = prompt_secret("Paste NOTION_TOKEN (ntn_...)")
+            if not notion_token.startswith("ntn_"):
+                raise RuntimeError("Invalid NOTION_TOKEN format. It should start with 'ntn_'.")
+            update_config({"notion_token": notion_token, "updated_at": datetime.now(timezone.utc).isoformat()})
+            print("[login] token saved.")
+            if not getattr(args, "no_connect", False):
+                print("[login] starting database setup...")
+                cmd_connect(args)
+            return
+
         print("[login] first-time setup: open Notion integration page.")
         print(f"[login] if needed, create OAuth integration here: {NOTION_INTEGRATION_CREATE_URL}")
         webbrowser.open(NOTION_INTEGRATION_CREATE_URL)
@@ -941,6 +964,9 @@ def cmd_login(args: argparse.Namespace) -> None:
     )
 
     print("[login] success. Token saved to ~/.justfine/config.json")
+    if not getattr(args, "no_connect", False):
+        print("[login] starting database setup...")
+        cmd_connect(args)
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -1054,14 +1080,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = ap.add_subparsers(dest="command", required=True)
 
-    login = sub.add_parser("login", aliases=["/login"], help="OAuth login via browser redirect")
+    login = sub.add_parser("login", aliases=["/login"], help="Easy login (token recommended, oauth optional)")
+    login.add_argument("--notion-token", help="Notion internal integration token (ntn_...)")
     login.add_argument("--client-id", help="Notion OAuth client ID")
     login.add_argument("--client-secret", help="Notion OAuth client secret")
     login.add_argument("--redirect-uri", help="OAuth redirect URI (default: http://127.0.0.1:8765/callback)")
     login.add_argument("--timeout", type=int, default=180, help="OAuth wait timeout seconds")
+    login.add_argument("--no-connect", action="store_true", help="Only save token/login, skip DB setup")
     login.set_defaults(func=cmd_login)
 
-    connect = sub.add_parser("connect", help="Interactive one-shot setup (login + pick/create DB)")
+    connect = sub.add_parser("connect", aliases=["/connect"], help="Interactive one-shot setup (login + pick/create DB)")
     connect.add_argument("--notion-token", help="Notion integration token")
     connect.add_argument("--client-id", help="Notion OAuth client ID")
     connect.add_argument("--client-secret", help="Notion OAuth client secret")
@@ -1078,7 +1106,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--database-title", default="API Spec", help="New Notion database title")
     init.set_defaults(func=cmd_init)
 
-    sync = sub.add_parser("sync", help="Scan repo and sync API specs to Notion DB")
+    sync = sub.add_parser("sync", aliases=["/sync"], help="Scan repo and sync API specs to Notion DB")
     sync.add_argument("--repo", default=".", help="Path to source repository (default: current dir)")
     sync.add_argument("--database-id", help="Notion database ID")
     sync.add_argument("--notion-token", help="Notion integration token")
