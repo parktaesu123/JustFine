@@ -1,0 +1,14 @@
+{
+  "Method": "Method",
+  "Path": "Path",
+  "Controller": "Controller",
+  "Summary": "Summary",
+  "Params": "Params",
+  "Request Body": "Request Body",
+  "Response": "Response",
+  "Source": "Source",
+  "Endpoint ID": "Endpoint ID",
+  "Spec Hash": "Spec Hash",
+  "Status": "Status",
+  "Last Synced At": "Last Synced At"
+}
