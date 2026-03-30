@@ -11,23 +11,9 @@ brew install --HEAD parktaesu123/justfine/justfine-api-sync
 
 ## 2) 로그인 + 연결 (한 번만)
 
-가장 쉬운 방법:
-
-```bash
-justfine-api-sync /login
-```
-
-권장: 토큰을 바로 넣는 방법
-
 ```bash
 justfine-api-sync /login --notion-token "실제_ntn_토큰"
 ```
-
-`/login`이 하는 일:
-
-- Notion 토큰 저장
-- 이어서 페이지/DB 선택 또는 생성까지 진행
-- 설정을 `~/.justfine/config.json`에 저장
 
 ## 3) 동기화
 
@@ -35,17 +21,16 @@ justfine-api-sync /login --notion-token "실제_ntn_토큰"
 justfine-api-sync /sync --archive-missing
 ```
 
-## 실수 방지
+## 생성되는 핵심 컬럼 (깔끔 모드)
 
-- `--notion-token "ntn_...."` 처럼 예시 문자열 그대로 넣으면 실패합니다.
-- `Page search keyword`는 토큰 입력칸이 아니라 Notion 페이지 검색어 입력칸입니다.
-- 토큰이 노출되면 즉시 Notion에서 재발급(rotate)하세요.
+- `API Name`
+- `HTTP Method`
+- `Endpoint`
+- `Token Required`
+- `Request`
+- `Response`
 
-## 주요 명령
+## 참고
 
-```bash
-justfine-api-sync /login
-justfine-api-sync /connect
-justfine-api-sync /sync
-justfine-api-sync config
-```
+- 기존 DB에 예전 컬럼이 많으면 그대로 남아 보일 수 있습니다.
+- 위 6개만 깔끔하게 쓰려면 새 DB를 만들거나 기존 DB 컬럼을 정리하세요.

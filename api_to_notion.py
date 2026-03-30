@@ -135,24 +135,12 @@ class NotionClient:
             "title": [{"type": "text", "text": {"content": title}}],
             "properties": {
                 "Name": {"title": {}},
-                "Domain": {"rich_text": {}},
                 "API Name": {"rich_text": {}},
-                "Method": {"select": {"options": [{"name": "GET"}, {"name": "POST"}, {"name": "PUT"}, {"name": "DELETE"}, {"name": "PATCH"}]}},
-                "Path": {"rich_text": {}},
-                "Auth Required": {"select": {"options": [{"name": "Yes"}, {"name": "No"}]}},
-                "Headers": {"rich_text": {}},
-                "Controller": {"rich_text": {}},
-                "Summary": {"rich_text": {}},
-                "Params": {"rich_text": {}},
-                "Request Body": {"rich_text": {}},
-                "Request Schema": {"rich_text": {}},
+                "HTTP Method": {"select": {"options": [{"name": "GET"}, {"name": "POST"}, {"name": "PUT"}, {"name": "DELETE"}, {"name": "PATCH"}]}},
+                "Endpoint": {"rich_text": {}},
+                "Token Required": {"select": {"options": [{"name": "Yes"}, {"name": "No"}]}},
+                "Request": {"rich_text": {}},
                 "Response": {"rich_text": {}},
-                "Response Schema": {"rich_text": {}},
-                "Exceptions": {"rich_text": {}},
-                "Source": {"rich_text": {}},
-                "Endpoint ID": {"rich_text": {}},
-                "Spec Hash": {"rich_text": {}},
-                "Status": {"select": {"options": [{"name": "Active"}, {"name": "Deprecated"}]}},
                 "Last Synced At": {"date": {}},
             },
         }
@@ -635,34 +623,54 @@ def extract_plain_text(prop: dict) -> str:
     return ""
 
 
+def compact_request_text(ep: Endpoint) -> str:
+    parts: List[str] = []
+    if ep.params:
+        parts.append(f"params={json.dumps(ep.params, ensure_ascii=False)}")
+    if ep.request_body:
+        parts.append(f"bodyType={ep.request_body}")
+    if ep.request_schema and ep.request_schema != "{\"type\": \"none\"}":
+        parts.append(f"schema={ep.request_schema}")
+    return " | ".join(parts) if parts else "-"
+
+
+def compact_response_text(ep: Endpoint) -> str:
+    parts: List[str] = []
+    if ep.response:
+        parts.append(f"type={ep.response}")
+    if ep.response_schema and ep.response_schema != "{\"type\": \"void\"}":
+        parts.append(f"schema={ep.response_schema}")
+    if ep.exceptions:
+        parts.append(f"errors={json.dumps(ep.exceptions, ensure_ascii=False)}")
+    return " | ".join(parts) if parts else "-"
+
+
 def map_properties(ep: Endpoint, db_schema: dict, prop_names: Dict[str, str]) -> dict:
     now_iso = datetime.now(timezone.utc).isoformat()
     props = {}
 
     title_prop = prop_names["title"]
     props[title_prop] = {
-        "title": [{"type": "text", "text": {"content": ep.endpoint_key[:2000]}}]
+        "title": [{"type": "text", "text": {"content": (ep.api_name or ep.endpoint_key)[:2000]}}]
     }
 
+    request_text = compact_request_text(ep)
+    response_text = compact_response_text(ep)
+
     mapping = {
-        "Domain": ep.domain,
         "API Name": ep.api_name,
+        "HTTP Method": ep.method,
+        "Endpoint": ep.path,
+        "Token Required": ep.auth_required,
+        "Request": request_text,
+        "Response": response_text,
+        # Backward-compatible optional fields (only mapped if present in DB)
         "Method": ep.method,
         "Path": ep.path,
         "Auth Required": ep.auth_required,
-        "Headers": json.dumps(ep.headers, ensure_ascii=False),
-        "Controller": ep.controller,
-        "Summary": ep.summary,
-        "Params": json.dumps(ep.params, ensure_ascii=False),
         "Request Body": ep.request_body,
-        "Request Schema": ep.request_schema,
-        "Response": ep.response,
-        "Response Schema": ep.response_schema,
-        "Exceptions": json.dumps(ep.exceptions, ensure_ascii=False),
-        "Source": ep.source_file,
         "Endpoint ID": ep.stable_id,
         "Spec Hash": ep.spec_hash,
-        "Status": "Active",
         "Last Synced At": now_iso,
     }
 
@@ -702,25 +710,20 @@ def load_property_config(path: Optional[str]) -> Dict[str, str]:
 def build_default_property_aliases(db: dict, title_prop: str) -> Dict[str, str]:
     aliases = {"title": title_prop}
     desired = [
-        "Domain",
         "API Name",
+        "HTTP Method",
+        "Endpoint",
+        "Token Required",
+        "Request",
+        "Response",
+        "Last Synced At",
+        # backward compatibility
         "Method",
         "Path",
         "Auth Required",
-        "Headers",
-        "Controller",
-        "Summary",
-        "Params",
         "Request Body",
-        "Request Schema",
-        "Response",
-        "Response Schema",
-        "Exceptions",
-        "Source",
         "Endpoint ID",
         "Spec Hash",
-        "Status",
-        "Last Synced At",
     ]
     db_props = db.get("properties", {})
     name_lut = {k.lower(): k for k in db_props.keys()}
