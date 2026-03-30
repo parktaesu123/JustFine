@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -14,8 +15,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
-
-import requests
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 NOTION_VERSION = "2022-06-28"
 NOTION_API_BASE = "https://api.notion.com/v1"
@@ -24,6 +25,35 @@ NOTION_OAUTH_TOKEN = "https://api.notion.com/v1/oauth/token"
 CONFIG_DIR = Path.home() / ".justfine"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 NOTION_INTEGRATION_CREATE_URL = "https://www.notion.so/profile/integrations"
+
+
+def http_json(
+    method: str,
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+    json_payload: Optional[dict] = None,
+    form_payload: Optional[Dict[str, str]] = None,
+    timeout: int = 30,
+) -> dict:
+    req_headers = dict(headers or {})
+    data = None
+    if json_payload is not None:
+        req_headers.setdefault("Content-Type", "application/json")
+        data = json.dumps(json_payload).encode("utf-8")
+    elif form_payload is not None:
+        req_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        data = urlencode(form_payload).encode("utf-8")
+
+    req = Request(url, data=data, headers=req_headers, method=method)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"HTTP error {e.code}: {body}") from e
+    except URLError as e:
+        raise RuntimeError(f"Network error: {e}") from e
 
 
 @dataclass
@@ -86,21 +116,15 @@ class ExistingPage:
 class NotionClient:
     def __init__(self, token: str):
         self.base_url = NOTION_API_BASE
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "Authorization": f"Bearer {token}",
-                "Notion-Version": NOTION_VERSION,
-                "Content-Type": "application/json",
-            }
-        )
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": NOTION_VERSION,
+            "Content-Type": "application/json",
+        }
 
     def _request(self, method: str, path: str, payload: Optional[dict] = None) -> dict:
         url = f"{self.base_url}{path}"
-        resp = self.session.request(method, url, json=payload, timeout=30)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Notion API error {resp.status_code}: {resp.text}")
-        return resp.json()
+        return http_json(method, url, headers=self.headers, json_payload=payload, timeout=30)
 
     def get_database(self, database_id: str) -> dict:
         return self._request("GET", f"/databases/{database_id}")
@@ -870,20 +894,18 @@ def cmd_login(args: argparse.Namespace) -> None:
     if got_state != state:
         raise RuntimeError("OAuth state mismatch. Aborting for safety.")
 
-    token_resp = requests.post(
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("utf-8")
+    token_data = http_json(
+        "POST",
         NOTION_OAUTH_TOKEN,
-        auth=(client_id, client_secret),
-        data={
+        headers={"Authorization": f"Basic {basic}"},
+        form_payload={
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
         },
         timeout=30,
     )
-    if token_resp.status_code >= 400:
-        raise RuntimeError(f"Token exchange failed: {token_resp.status_code} {token_resp.text}")
-
-    token_data = token_resp.json()
     access_token = token_data.get("access_token")
     if not access_token:
         raise RuntimeError("No access_token in Notion token response")

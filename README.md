@@ -9,6 +9,14 @@ brew tap parktaesu123/justfine https://github.com/parktaesu123/JustFine.git
 brew install --HEAD parktaesu123/justfine/justfine-api-sync
 ```
 
+이미 설치 시도했다면:
+
+```bash
+brew uninstall justfine-api-sync || true
+brew update
+brew install --HEAD parktaesu123/justfine/justfine-api-sync
+```
+
 설치 확인:
 
 ```bash
