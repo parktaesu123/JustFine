@@ -15,12 +15,29 @@
 - 클래스 레벨 + 메서드 레벨 path 결합
 - `@PathVariable`, `@RequestParam`, `@RequestBody` 단순 추출
 
-## 1) 준비
+## 1) 설치 (IntelliJ / VSCode 터미널)
+
+프로젝트 루트에서 툴 설치하듯 명령어 한 줄로 설치해서 사용할 수 있습니다.
+
+### 방법 A. GitHub에서 바로 설치 (권장)
 
 ```bash
+pipx install "git+https://github.com/parktaesu123/JustFine.git"
+```
+
+설치 확인:
+
+```bash
+justfine-api-sync --help
+```
+
+### 방법 B. 로컬 레포 개발 모드 설치
+
+```bash
+cd /path/to/JustFine
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
 Notion 준비:
@@ -51,17 +68,19 @@ Notion 준비:
 
 ```bash
 export NOTION_TOKEN="secret_xxx"
-python api_to_notion.py \
+export NOTION_DATABASE_ID="notion_database_id"
+
+justfine-api-sync \
   --repo "/absolute/path/to/backend-repo" \
-  --database-id "notion_database_id" \
-  --property-map "property-map.example.json" \
+  --database-id "$NOTION_DATABASE_ID" \
+  --property-map "/absolute/path/to/property-map.example.json" \
   --archive-missing
 ```
 
 드라이런:
 
 ```bash
-python api_to_notion.py --repo "/absolute/path/to/backend-repo" --dry-run
+justfine-api-sync --repo "/absolute/path/to/backend-repo" --dry-run
 ```
 
 ## 4) 자동 반영 운영 방법
@@ -69,7 +88,7 @@ python api_to_notion.py --repo "/absolute/path/to/backend-repo" --dry-run
 ### 옵션 A. cron으로 5분마다 동기화
 
 ```bash
-*/5 * * * * cd /Users/bagtaesu/Desktop/git/JustFine && /Users/bagtaesu/Desktop/git/JustFine/.venv/bin/python api_to_notion.py --repo "/absolute/path/to/backend-repo" --database-id "notion_database_id" --archive-missing >> /tmp/api-sync.log 2>&1
+*/5 * * * * /usr/local/bin/justfine-api-sync --repo "/absolute/path/to/backend-repo" --database-id "notion_database_id" --archive-missing >> /tmp/api-sync.log 2>&1
 ```
 
 ### 옵션 B. GitHub Actions (push마다 동기화)
