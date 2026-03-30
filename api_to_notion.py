@@ -30,11 +30,18 @@ NOTION_INTEGRATION_CREATE_URL = "https://www.notion.so/profile/integrations"
 class Endpoint:
     method: str
     path: str
+    domain: str
+    api_name: str
     controller: str
     summary: str
+    auth_required: str
+    headers: List[Dict[str, str]]
     params: List[Dict[str, str]]
     request_body: str
+    request_schema: str
     response: str
+    response_schema: str
+    exceptions: List[Dict[str, str]]
     source_file: str
 
     @property
@@ -51,11 +58,18 @@ class Endpoint:
         payload = {
             "method": self.method,
             "path": self.path,
+            "domain": self.domain,
+            "api_name": self.api_name,
             "controller": self.controller,
             "summary": self.summary,
+            "auth_required": self.auth_required,
+            "headers": self.headers,
             "params": self.params,
             "request_body": self.request_body,
+            "request_schema": self.request_schema,
             "response": self.response,
+            "response_schema": self.response_schema,
+            "exceptions": self.exceptions,
         }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
@@ -97,13 +111,20 @@ class NotionClient:
             "title": [{"type": "text", "text": {"content": title}}],
             "properties": {
                 "Name": {"title": {}},
+                "Domain": {"rich_text": {}},
+                "API Name": {"rich_text": {}},
                 "Method": {"select": {"options": [{"name": "GET"}, {"name": "POST"}, {"name": "PUT"}, {"name": "DELETE"}, {"name": "PATCH"}]}},
                 "Path": {"rich_text": {}},
+                "Auth Required": {"select": {"options": [{"name": "Yes"}, {"name": "No"}]}},
+                "Headers": {"rich_text": {}},
                 "Controller": {"rich_text": {}},
                 "Summary": {"rich_text": {}},
                 "Params": {"rich_text": {}},
                 "Request Body": {"rich_text": {}},
+                "Request Schema": {"rich_text": {}},
                 "Response": {"rich_text": {}},
+                "Response Schema": {"rich_text": {}},
+                "Exceptions": {"rich_text": {}},
                 "Source": {"rich_text": {}},
                 "Endpoint ID": {"rich_text": {}},
                 "Spec Hash": {"rich_text": {}},
@@ -254,13 +275,42 @@ def extract_mapping_value(annotation_block: str) -> Tuple[str, str]:
 
 
 def parse_method_signature(line: str) -> Tuple[str, str]:
-    m = re.search(r"\b([A-Za-z0-9_<>\[\]?]+)\s+([A-Za-z0-9_]+)\s*\(", line)
+    m = re.search(r"\b([A-Za-z0-9_<>\[\]?.,]+)\s+([A-Za-z0-9_]+)\s*\(", line)
     if not m:
         return "", ""
-    return m.group(1), m.group(2)
+    return m.group(1).strip(), m.group(2).strip()
 
 
-def parse_params(signature_block: str) -> Tuple[List[Dict[str, str]], str]:
+def simple_type_name(t: str) -> str:
+    raw = re.sub(r"[@,\s]", " ", t).strip().split()
+    token = raw[-2] if len(raw) >= 2 and raw[-1] in ("final",) else raw[-1] if raw else t
+    token = token.replace("...", "").strip()
+    if "." in token:
+        token = token.split(".")[-1]
+    return token
+
+
+def infer_domain(path: Path, text: str) -> str:
+    pkg = re.search(r"package\s+([a-zA-Z0-9_.]+);", text)
+    if pkg:
+        parts = pkg.group(1).split(".")
+        if "domain" in parts:
+            i = parts.index("domain")
+            if i + 1 < len(parts):
+                return parts[i + 1]
+        if "controller" in parts:
+            i = parts.index("controller")
+            if i > 0:
+                return parts[i - 1]
+    parts = [p for p in path.parts]
+    if "domain" in parts:
+        i = parts.index("domain")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    return path.parent.name or "common"
+
+
+def parse_params(signature_block: str) -> Tuple[List[Dict[str, str]], str, bool]:
     inside = ""
     m = re.search(r"\((.*)\)", signature_block, flags=re.S)
     if m:
@@ -269,24 +319,171 @@ def parse_params(signature_block: str) -> Tuple[List[Dict[str, str]], str]:
     parts = [p.strip() for p in inside.split(",") if p.strip()]
     params: List[Dict[str, str]] = []
     request_body = ""
+    auth_from_param = False
 
     for p in parts:
-        if "@PathVariable" in p:
-            name = re.search(r"\b([A-Za-z0-9_]+)\s*$", p)
-            params.append({"in": "path", "name": name.group(1) if name else "unknown", "type": "string"})
-        elif "@RequestParam" in p:
-            name = re.search(r"\b([A-Za-z0-9_]+)\s*$", p)
-            params.append({"in": "query", "name": name.group(1) if name else "unknown", "type": "string"})
-        elif "@RequestBody" in p:
-            t = re.search(r"@RequestBody\s+([A-Za-z0-9_<>\[\].]+)", p)
-            request_body = t.group(1) if t else "object"
+        pname_match = re.search(r"\b([A-Za-z0-9_]+)\s*$", p)
+        pname = pname_match.group(1) if pname_match else "unknown"
+        ptype_match = re.search(r"(?:@[A-Za-z0-9_()\"=,\s]+\s+)*([A-Za-z0-9_<>\[\].]+)\s+[A-Za-z0-9_]+\s*$", p)
+        ptype = simple_type_name(ptype_match.group(1)) if ptype_match else "string"
 
-    return params, request_body
+        if "@PathVariable" in p:
+            params.append({"in": "path", "name": pname, "type": ptype})
+        elif "@RequestParam" in p:
+            params.append({"in": "query", "name": pname, "type": ptype})
+        elif "@RequestHeader" in p:
+            params.append({"in": "header", "name": pname, "type": ptype})
+            if "authorization" in p.lower() or "token" in p.lower():
+                auth_from_param = True
+        elif "@RequestBody" in p:
+            request_body = ptype
+        else:
+            params.append({"in": "query", "name": pname, "type": ptype})
+
+        if "@AuthenticationPrincipal" in p or "token" in p.lower():
+            auth_from_param = True
+
+    return params, request_body, auth_from_param
+
+
+def java_fields_from_text(text: str) -> Dict[str, str]:
+    fields: Dict[str, str] = {}
+    for m in re.finditer(
+        r"(?:private|protected|public)\s+(?:final\s+)?([A-Za-z0-9_<>\[\].]+)\s+([A-Za-z0-9_]+)\s*;",
+        text,
+    ):
+        ftype = simple_type_name(m.group(1))
+        fname = m.group(2)
+        fields[fname] = ftype
+    return fields
+
+
+def strip_generic(t: str) -> str:
+    t = t.strip()
+    t = re.sub(r"\[\]", "", t)
+    if "<" in t and ">" in t:
+        inner = t[t.find("<") + 1 : t.rfind(">")].strip()
+        if inner:
+            if "," in inner:
+                inner = inner.split(",")[-1].strip()
+            return strip_generic(inner)
+    return simple_type_name(t)
+
+
+def build_java_type_index(java_files: List[Path]) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]]]:
+    dto_index: Dict[str, Dict[str, str]] = {}
+    exc_index: Dict[str, Dict[str, str]] = {}
+    status_map = {
+        "BAD_REQUEST": "400",
+        "UNAUTHORIZED": "401",
+        "FORBIDDEN": "403",
+        "NOT_FOUND": "404",
+        "CONFLICT": "409",
+        "UNPROCESSABLE_ENTITY": "422",
+        "INTERNAL_SERVER_ERROR": "500",
+    }
+
+    for f in java_files:
+        text = f.read_text(encoding="utf-8", errors="ignore")
+        cname_match = re.search(r"class\s+([A-Za-z0-9_]+)", text)
+        if not cname_match:
+            continue
+        cname = cname_match.group(1)
+        dto_index[cname] = java_fields_from_text(text)
+
+        if "Exception" in cname:
+            status = ""
+            status_m = re.search(r"HttpStatus\.([A-Z_]+)", text)
+            if status_m:
+                status = status_map.get(status_m.group(1), status_m.group(1))
+            ecode = ""
+            code_m = re.search(r"(?:ERROR_CODE|errorCode|code)\s*=\s*\"([A-Z0-9_:-]+)\"", text)
+            if code_m:
+                ecode = code_m.group(1)
+            else:
+                token_m = re.search(r"\b([A-Z][A-Z0-9_]*_ERROR)\b", text)
+                if token_m:
+                    ecode = token_m.group(1)
+            exc_index[cname] = {"error_code": ecode, "http_status": status}
+
+    return dto_index, exc_index
+
+
+def build_schema_for_type(
+    type_name: str,
+    dto_index: Dict[str, Dict[str, str]],
+    depth: int = 0,
+    visited: Optional[set] = None,
+) -> Dict[str, object]:
+    if visited is None:
+        visited = set()
+    base = strip_generic(type_name)
+    if not base or depth > 2:
+        return {"type": base or "object"}
+    if base in ("String", "Integer", "Long", "Boolean", "Double", "Float", "BigDecimal", "LocalDate", "LocalDateTime"):
+        return {"type": base}
+    if base in visited:
+        return {"type": base}
+    visited.add(base)
+    fields = dto_index.get(base)
+    if not fields:
+        return {"type": base}
+    children: Dict[str, object] = {}
+    for fname, ftype in fields.items():
+        children[fname] = build_schema_for_type(ftype, dto_index, depth + 1, visited.copy())
+    return {"type": base, "fields": children}
+
+
+def detect_auth_required(class_text: str, ann_block: str, signature: str, params: List[Dict[str, str]], auth_from_param: bool) -> Tuple[str, List[Dict[str, str]]]:
+    combined = "\n".join([class_text, ann_block, signature]).lower()
+    needs = auth_from_param or any(
+        key in combined
+        for key in (
+            "@preauthorize",
+            "@secured",
+            "@rolesallowed",
+            "@securityrequirement",
+            "@authenticationprincipal",
+            "bearer",
+            "jwt",
+        )
+    )
+    headers = [{"name": "Authorization", "required": "true", "format": "Bearer <token>"}] if needs else []
+    if any(p.get("in") == "header" and ("authorization" in p.get("name", "").lower() or "token" in p.get("name", "").lower()) for p in params):
+        needs = True
+        if not headers:
+            headers = [{"name": "Authorization", "required": "true", "format": "Bearer <token>"}]
+    return ("Yes" if needs else "No"), headers
+
+
+def parse_method_exceptions(signature: str, ann_block: str, body_lines: List[str], exc_index: Dict[str, Dict[str, str]]) -> List[Dict[str, str]]:
+    found: Dict[str, Dict[str, str]] = {}
+    throws_m = re.search(r"throws\s+([A-Za-z0-9_,\s]+)", signature)
+    if throws_m:
+        for ex in [x.strip() for x in throws_m.group(1).split(",") if x.strip()]:
+            meta = exc_index.get(ex, {})
+            found[ex] = {"name": ex, "error_code": meta.get("error_code", ""), "http_status": meta.get("http_status", "")}
+
+    for line in body_lines:
+        m = re.search(r"throw\s+new\s+([A-Za-z0-9_]+)", line)
+        if m:
+            ex = m.group(1)
+            meta = exc_index.get(ex, {})
+            found[ex] = {"name": ex, "error_code": meta.get("error_code", ""), "http_status": meta.get("http_status", "")}
+
+    for m in re.finditer(r"@ApiResponse\(\s*responseCode\s*=\s*\"([0-9]{3})\"(?:,\s*description\s*=\s*\"([^\"]*)\")?", ann_block):
+        code = m.group(1)
+        desc = m.group(2) or f"HTTP_{code}_ERROR"
+        key = f"ApiResponse{code}"
+        found[key] = {"name": desc, "error_code": desc, "http_status": code}
+
+    return list(found.values())
 
 
 def parse_java_endpoints(root: Path) -> List[Endpoint]:
     endpoints: List[Endpoint] = []
     java_files = [p for p in root.rglob("*.java") if p.is_file()]
+    dto_index, exc_index = build_java_type_index(java_files)
 
     for f in java_files:
         text = f.read_text(encoding="utf-8", errors="ignore")
@@ -295,6 +492,7 @@ def parse_java_endpoints(root: Path) -> List[Endpoint]:
 
         controller_match = re.search(r"class\s+([A-Za-z0-9_]+)", text)
         controller_name = controller_match.group(1) if controller_match else f.stem
+        domain = infer_domain(f, text)
 
         class_mapping = "/"
         for cm in re.finditer(r"@RequestMapping\((.*?)\)\s*(?:public\s+)?class", text, flags=re.S):
@@ -309,9 +507,7 @@ def parse_java_endpoints(root: Path) -> List[Endpoint]:
             if re.search(r"@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)", line):
                 ann_block = line
                 j = i + 1
-                while j < len(lines) and (
-                    lines[j].strip().startswith("@") or ("(" in ann_block and ")" not in ann_block)
-                ):
+                while j < len(lines) and (lines[j].strip().startswith("@") or ("(" in ann_block and ")" not in ann_block)):
                     ann_block += "\n" + lines[j]
                     if ")" in lines[j] and not lines[j].strip().startswith("@"):
                         break
@@ -330,19 +526,42 @@ def parse_java_endpoints(root: Path) -> List[Endpoint]:
                     continue
 
                 method, local_path = extract_mapping_value(ann_block)
-                _, method_name = parse_method_signature(sig)
-                params, request_body = parse_params(sig)
+                return_type, method_name = parse_method_signature(sig)
+                params, request_body, auth_from_param = parse_params(sig)
                 full_path = normalize_path(class_mapping, local_path)
+
+                body_lines: List[str] = []
+                brace_depth = 0
+                mline = k
+                while mline < len(lines):
+                    body_lines.append(lines[mline])
+                    brace_depth += lines[mline].count("{")
+                    brace_depth -= lines[mline].count("}")
+                    if brace_depth <= 0 and "}" in lines[mline]:
+                        break
+                    mline += 1
+
+                auth_required, headers = detect_auth_required(text, ann_block, sig, params, auth_from_param)
+                request_schema_obj = build_schema_for_type(request_body, dto_index) if request_body else {"type": "none"}
+                response_schema_obj = build_schema_for_type(return_type, dto_index) if return_type else {"type": "void"}
+                exceptions = parse_method_exceptions(sig, ann_block, body_lines, exc_index)
 
                 endpoints.append(
                     Endpoint(
                         method=method,
                         path=full_path,
+                        domain=domain,
+                        api_name=method_name or f"{method} {full_path}",
                         controller=controller_name,
                         summary=method_name or "",
+                        auth_required=auth_required,
+                        headers=headers,
                         params=params,
                         request_body=request_body or "",
-                        response="",
+                        request_schema=json.dumps(request_schema_obj, ensure_ascii=False),
+                        response=return_type or "",
+                        response_schema=json.dumps(response_schema_obj, ensure_ascii=False),
+                        exceptions=exceptions,
                         source_file=str(f),
                     )
                 )
@@ -393,13 +612,20 @@ def map_properties(ep: Endpoint, db_schema: dict, prop_names: Dict[str, str]) ->
     }
 
     mapping = {
+        "Domain": ep.domain,
+        "API Name": ep.api_name,
         "Method": ep.method,
         "Path": ep.path,
+        "Auth Required": ep.auth_required,
+        "Headers": json.dumps(ep.headers, ensure_ascii=False),
         "Controller": ep.controller,
         "Summary": ep.summary,
         "Params": json.dumps(ep.params, ensure_ascii=False),
         "Request Body": ep.request_body,
+        "Request Schema": ep.request_schema,
         "Response": ep.response,
+        "Response Schema": ep.response_schema,
+        "Exceptions": json.dumps(ep.exceptions, ensure_ascii=False),
         "Source": ep.source_file,
         "Endpoint ID": ep.stable_id,
         "Spec Hash": ep.spec_hash,
@@ -443,13 +669,20 @@ def load_property_config(path: Optional[str]) -> Dict[str, str]:
 def build_default_property_aliases(db: dict, title_prop: str) -> Dict[str, str]:
     aliases = {"title": title_prop}
     desired = [
+        "Domain",
+        "API Name",
         "Method",
         "Path",
+        "Auth Required",
+        "Headers",
         "Controller",
         "Summary",
         "Params",
         "Request Body",
+        "Request Schema",
         "Response",
+        "Response Schema",
+        "Exceptions",
         "Source",
         "Endpoint ID",
         "Spec Hash",
