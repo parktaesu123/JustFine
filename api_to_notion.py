@@ -4,14 +4,25 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import threading
+import time
+import webbrowser
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
 NOTION_VERSION = "2022-06-28"
+NOTION_API_BASE = "https://api.notion.com/v1"
+NOTION_OAUTH_AUTHORIZE = "https://api.notion.com/v1/oauth/authorize"
+NOTION_OAUTH_TOKEN = "https://api.notion.com/v1/oauth/token"
+CONFIG_DIR = Path.home() / ".justfine"
+CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
 @dataclass
@@ -59,7 +70,7 @@ class ExistingPage:
 
 class NotionClient:
     def __init__(self, token: str):
-        self.base_url = "https://api.notion.com/v1"
+        self.base_url = NOTION_API_BASE
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -79,6 +90,28 @@ class NotionClient:
     def get_database(self, database_id: str) -> dict:
         return self._request("GET", f"/databases/{database_id}")
 
+    def create_database(self, parent_page_id: str, title: str) -> dict:
+        payload = {
+            "parent": {"type": "page_id", "page_id": parent_page_id},
+            "title": [{"type": "text", "text": {"content": title}}],
+            "properties": {
+                "Name": {"title": {}},
+                "Method": {"select": {"options": [{"name": "GET"}, {"name": "POST"}, {"name": "PUT"}, {"name": "DELETE"}, {"name": "PATCH"}]}},
+                "Path": {"rich_text": {}},
+                "Controller": {"rich_text": {}},
+                "Summary": {"rich_text": {}},
+                "Params": {"rich_text": {}},
+                "Request Body": {"rich_text": {}},
+                "Response": {"rich_text": {}},
+                "Source": {"rich_text": {}},
+                "Endpoint ID": {"rich_text": {}},
+                "Spec Hash": {"rich_text": {}},
+                "Status": {"select": {"options": [{"name": "Active"}, {"name": "Deprecated"}]}},
+                "Last Synced At": {"date": {}},
+            },
+        }
+        return self._request("POST", "/databases", payload)
+
     def query_database(self, database_id: str, start_cursor: Optional[str] = None) -> dict:
         payload = {}
         if start_cursor:
@@ -97,6 +130,37 @@ class NotionClient:
 
     def archive_page(self, page_id: str) -> dict:
         return self._request("PATCH", f"/pages/{page_id}", {"archived": True})
+
+
+def load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def update_config(patch: dict) -> dict:
+    cfg = load_config()
+    cfg.update(patch)
+    save_config(cfg)
+    return cfg
+
+
+def resolve_setting(cli_value: Optional[str], env_key: str, cfg_key: str) -> Optional[str]:
+    if cli_value:
+        return cli_value
+    env = os.getenv(env_key)
+    if env:
+        return env
+    cfg = load_config()
+    return cfg.get(cfg_key)
 
 
 def normalize_path(base: str, sub: str) -> str:
@@ -435,23 +499,144 @@ def sync_to_notion(
     )
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Scan Spring endpoints and sync API specs into Notion DB")
-    ap.add_argument("--repo", required=True, help="Path to source repository")
-    ap.add_argument("--database-id", help="Notion database ID")
-    ap.add_argument("--notion-token", default=os.getenv("NOTION_TOKEN"), help="Notion integration token")
-    ap.add_argument("--property-map", help="JSON file mapping logical fields to Notion property names")
-    ap.add_argument("--dry-run", action="store_true", help="Scan only and print extracted endpoints")
-    ap.add_argument(
-        "--archive-missing",
-        action="store_true",
-        help="Archive Notion rows that are no longer present in code",
-    )
-    args = ap.parse_args()
+def _run_local_callback_server(host: str, port: int, timeout_seconds: int) -> Tuple[str, str]:
+    received = {"code": "", "state": ""}
 
+    class OAuthHandler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args) -> None:
+            return
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path != "/callback":
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            q = parse_qs(parsed.query)
+            received["code"] = (q.get("code") or [""])[0]
+            received["state"] = (q.get("state") or [""])[0]
+
+            html = "<html><body><h3>Notion authentication complete.</h3><p>You can close this tab and return to terminal.</p></body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html.encode("utf-8"))))
+            self.end_headers()
+            self.wfile.write(html.encode("utf-8"))
+
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+    httpd = HTTPServer((host, port), OAuthHandler)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline and not received["code"]:
+        time.sleep(0.1)
+
+    if not received["code"]:
+        httpd.shutdown()
+        raise RuntimeError("OAuth callback timeout. Try login again.")
+
+    return received["code"], received["state"]
+
+
+def cmd_login(args: argparse.Namespace) -> None:
+    client_id = resolve_setting(args.client_id, "NOTION_CLIENT_ID", "client_id")
+    client_secret = resolve_setting(args.client_secret, "NOTION_CLIENT_SECRET", "client_secret")
+    redirect_uri = resolve_setting(args.redirect_uri, "NOTION_REDIRECT_URI", "redirect_uri") or "http://127.0.0.1:8765/callback"
+
+    if not client_id or not client_secret:
+        raise RuntimeError("Missing client id/secret. Set NOTION_CLIENT_ID and NOTION_CLIENT_SECRET or pass flags.")
+
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost") or not parsed.port:
+        raise RuntimeError("redirect-uri must be local callback (e.g. http://127.0.0.1:8765/callback)")
+
+    state = secrets.token_urlsafe(24)
+    auth_url = f"{NOTION_OAUTH_AUTHORIZE}?" + urlencode(
+        {
+            "owner": "user",
+            "client_id": client_id,
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "state": state,
+        }
+    )
+
+    print("[login] opening browser for Notion authorization...")
+    opened = webbrowser.open(auth_url)
+    if not opened:
+        print("[login] could not open browser automatically. Open this URL manually:")
+        print(auth_url)
+
+    code, got_state = _run_local_callback_server(parsed.hostname or "127.0.0.1", parsed.port, args.timeout)
+    if got_state != state:
+        raise RuntimeError("OAuth state mismatch. Aborting for safety.")
+
+    token_resp = requests.post(
+        NOTION_OAUTH_TOKEN,
+        auth=(client_id, client_secret),
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect_uri,
+        },
+        timeout=30,
+    )
+    if token_resp.status_code >= 400:
+        raise RuntimeError(f"Token exchange failed: {token_resp.status_code} {token_resp.text}")
+
+    token_data = token_resp.json()
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise RuntimeError("No access_token in Notion token response")
+
+    update_config(
+        {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "notion_token": access_token,
+            "workspace_name": token_data.get("workspace_name", ""),
+            "workspace_id": token_data.get("workspace_id", ""),
+            "owner_type": (token_data.get("owner") or {}).get("type", ""),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    print("[login] success. Token saved to ~/.justfine/config.json")
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    notion_token = resolve_setting(args.notion_token, "NOTION_TOKEN", "notion_token")
+    if not notion_token:
+        raise RuntimeError("No Notion token found. Run 'justfine-api-sync login' first.")
+
+    if not args.parent_page_id:
+        raise RuntimeError("--parent-page-id is required. Use page URL ID where DB should be created.")
+
+    client = NotionClient(notion_token)
+    created = client.create_database(args.parent_page_id, args.database_title)
+    db_id = created["id"].replace("-", "")
+
+    update_config({"database_id": db_id})
+    print(f"[init] database created: {db_id}")
+    print("[init] saved database_id to ~/.justfine/config.json")
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
     repo = Path(args.repo).expanduser().resolve()
     if not repo.exists():
         raise RuntimeError(f"repo path not found: {repo}")
+
+    notion_token = resolve_setting(args.notion_token, "NOTION_TOKEN", "notion_token")
+    database_id = resolve_setting(args.database_id, "NOTION_DATABASE_ID", "database_id")
+
+    if not notion_token:
+        raise RuntimeError("No Notion token found. Run 'justfine-api-sync login' first or set NOTION_TOKEN.")
+    if not database_id:
+        raise RuntimeError("No database id found. Run 'justfine-api-sync init' or pass --database-id.")
 
     endpoints = parse_java_endpoints(repo)
     print(f"[scan] found endpoints: {len(endpoints)}")
@@ -461,13 +646,8 @@ def main() -> None:
             print("[dry-run]", json.dumps(asdict(ep), ensure_ascii=False))
         return
 
-    if not args.notion_token:
-        raise RuntimeError("Missing notion token. Pass --notion-token or set NOTION_TOKEN")
-    if not args.database_id:
-        raise RuntimeError("Missing --database-id")
-
-    client = NotionClient(args.notion_token)
-    db = client.get_database(args.database_id)
+    client = NotionClient(notion_token)
+    db = client.get_database(database_id)
     title_prop = find_title_property(db)
 
     aliases = build_default_property_aliases(db, title_prop)
@@ -475,12 +655,67 @@ def main() -> None:
 
     sync_to_notion(
         client=client,
-        database_id=args.database_id,
+        database_id=database_id,
         db=db,
         aliases=aliases,
         endpoints=endpoints,
         archive_missing=args.archive_missing,
     )
+
+
+def cmd_config_show(_args: argparse.Namespace) -> None:
+    cfg = load_config()
+    if not cfg:
+        print("[config] no config found")
+        return
+
+    redacted = dict(cfg)
+    if redacted.get("notion_token"):
+        redacted["notion_token"] = "***"
+    if redacted.get("client_secret"):
+        redacted["client_secret"] = "***"
+    print(json.dumps(redacted, ensure_ascii=False, indent=2))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="justfine-api-sync",
+        description="Install-style CLI: login to Notion, init DB, and sync Spring API specs",
+    )
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    login = sub.add_parser("login", help="OAuth login via browser redirect")
+    login.add_argument("--client-id", help="Notion OAuth client ID")
+    login.add_argument("--client-secret", help="Notion OAuth client secret")
+    login.add_argument("--redirect-uri", help="OAuth redirect URI (default: http://127.0.0.1:8765/callback)")
+    login.add_argument("--timeout", type=int, default=180, help="OAuth wait timeout seconds")
+    login.set_defaults(func=cmd_login)
+
+    init = sub.add_parser("init", help="Create Notion API spec database and save database_id")
+    init.add_argument("--notion-token", help="Notion integration token (optional if login done)")
+    init.add_argument("--parent-page-id", required=True, help="Parent Notion page ID where DB will be created")
+    init.add_argument("--database-title", default="API Spec", help="New Notion database title")
+    init.set_defaults(func=cmd_init)
+
+    sync = sub.add_parser("sync", help="Scan repo and sync API specs to Notion DB")
+    sync.add_argument("--repo", required=True, help="Path to source repository")
+    sync.add_argument("--database-id", help="Notion database ID")
+    sync.add_argument("--notion-token", help="Notion integration token")
+    sync.add_argument("--property-map", help="JSON file mapping logical fields to Notion property names")
+    sync.add_argument("--dry-run", action="store_true", help="Scan only and print extracted endpoints")
+    sync.add_argument("--archive-missing", action="store_true", help="Archive Notion rows no longer in code")
+    sync.set_defaults(func=cmd_sync)
+
+    config_show = sub.add_parser("config", help="Show saved local config")
+    config_show.set_defaults(func=cmd_config_show)
+
+    return ap
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    args.func(args)
 
 
 if __name__ == "__main__":

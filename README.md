@@ -1,25 +1,8 @@
-# API -> Notion 자동 명세 동기화
+# JustFine API Sync
 
-코드(Spring Java 컨트롤러)를 읽어 API 엔드포인트를 추출하고 Notion 데이터베이스에 자동 동기화합니다.
+Spring 서버 코드를 읽어 Notion API 명세 DB를 자동으로 생성/업데이트하는 CLI입니다.
 
-이제 아래를 지원합니다.
-
-- 신규 API 생성 시: Notion 페이지 자동 생성
-- 기존 API 변경 시: 해시 기반 변경 감지 후 자동 업데이트
-- 코드에서 API 삭제 시: Notion 페이지 자동 아카이브(`--archive-missing`)
-- 변경 없는 API: 자동 스킵
-
-## 지원 범위
-
-- `@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping`, `@RequestMapping`
-- 클래스 레벨 + 메서드 레벨 path 결합
-- `@PathVariable`, `@RequestParam`, `@RequestBody` 단순 추출
-
-## 1) 설치 (IntelliJ / VSCode 터미널)
-
-프로젝트 루트에서 툴 설치하듯 명령어 한 줄로 설치해서 사용할 수 있습니다.
-
-### 방법 A. GitHub에서 바로 설치 (권장)
+## 터미널에서 바로 설치
 
 ```bash
 pipx install "git+https://github.com/parktaesu123/JustFine.git"
@@ -31,74 +14,83 @@ pipx install "git+https://github.com/parktaesu123/JustFine.git"
 justfine-api-sync --help
 ```
 
-### 방법 B. 로컬 레포 개발 모드 설치
+## 한 번만 설정 (OAuth 로그인)
+
+### 1) Notion OAuth Integration 준비
+
+Notion에서 OAuth Integration을 만들고 아래 값을 준비하세요.
+
+- `NOTION_CLIENT_ID`
+- `NOTION_CLIENT_SECRET`
+
+OAuth Redirect URI는 **반드시** 아래로 설정하세요.
+
+- `http://127.0.0.1:8765/callback`
+
+### 2) 터미널에서 로그인
 
 ```bash
-cd /path/to/JustFine
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+export NOTION_CLIENT_ID="your_client_id"
+export NOTION_CLIENT_SECRET="your_client_secret"
+
+justfine-api-sync login
 ```
 
-Notion 준비:
+그러면 브라우저가 열리고 권한 승인 후, 토큰이 로컬에 저장됩니다.
 
-1. Notion Integration 생성 + 토큰 발급
-2. API 명세용 DB를 Integration에 공유(Share)
-3. DB 컬럼 생성 (아래 권장)
+- 저장 위치: `~/.justfine/config.json`
 
-## 2) Notion DB 권장 컬럼
-
-- `Name` (title) <- 필수
-- `Method` (select 또는 rich_text)
-- `Path` (rich_text)
-- `Controller` (rich_text)
-- `Summary` (rich_text)
-- `Params` (rich_text)
-- `Request Body` (rich_text)
-- `Response` (rich_text)
-- `Source` (rich_text)
-- `Endpoint ID` (rich_text)
-- `Spec Hash` (rich_text)
-- `Status` (select 또는 rich_text)
-- `Last Synced At` (date 또는 rich_text)
-
-컬럼명이 다르면 `--property-map`으로 매핑하세요.
-
-## 3) 실행
+## 한 번만 설정 (Notion DB 자동 생성)
 
 ```bash
-export NOTION_TOKEN="secret_xxx"
-export NOTION_DATABASE_ID="notion_database_id"
-
-justfine-api-sync \
-  --repo "/absolute/path/to/backend-repo" \
-  --database-id "$NOTION_DATABASE_ID" \
-  --property-map "/absolute/path/to/property-map.example.json" \
-  --archive-missing
+justfine-api-sync init \
+  --parent-page-id "your_notion_page_id" \
+  --database-title "API Spec"
 ```
 
-드라이런:
+`parent-page-id`는 DB를 만들 페이지의 ID입니다.
+Notion 페이지 URL의 마지막 ID(하이픈 제거 전/후 둘 다 가능)를 넣으면 됩니다.
+
+이 명령이 끝나면 생성된 `database_id`도 `~/.justfine/config.json`에 저장됩니다.
+
+## 매일 쓰는 명령 (코드 -> Notion 동기화)
+
+서버 프로젝트 루트에서 실행:
 
 ```bash
-justfine-api-sync --repo "/absolute/path/to/backend-repo" --dry-run
+justfine-api-sync sync --repo . --archive-missing
 ```
 
-## 4) 자동 반영 운영 방법
+동작:
 
-### 옵션 A. cron으로 5분마다 동기화
+- 새 API: Notion에 생성
+- 바뀐 API: Notion 업데이트
+- 안 바뀐 API: 스킵
+- 코드에서 삭제된 API: 아카이브 (`--archive-missing`)
+
+## 자주 쓰는 옵션
 
 ```bash
-*/5 * * * * /usr/local/bin/justfine-api-sync --repo "/absolute/path/to/backend-repo" --database-id "notion_database_id" --archive-missing >> /tmp/api-sync.log 2>&1
+justfine-api-sync sync --repo . --dry-run
+justfine-api-sync sync --repo . --database-id "override_db_id"
+justfine-api-sync config
 ```
 
-### 옵션 B. GitHub Actions (push마다 동기화)
+## 자동화
 
-`push -> sync script 실행`으로 두면 API 변경 즉시 Notion 반영됩니다.
+예: 5분마다 동기화 (cron)
 
-## 주의/한계
+```bash
+*/5 * * * * /usr/local/bin/justfine-api-sync sync --repo "/absolute/path/to/backend" --archive-missing >> /tmp/justfine-api-sync.log 2>&1
+```
 
-- 파서는 정규식 기반이라 복잡한 코드 패턴에서 누락 가능
-- 현재는 Spring(Java) 기준
-- 응답 스키마(`Response`)는 코드에서 자동 추론하지 않음
+## 현재 지원 범위
 
-원하면 다음 단계로 `springdoc-openapi`를 붙여 OpenAPI 스펙(JSON) 기준으로 더 정확하게 동기화하도록 고도화할 수 있습니다.
+- Spring Java annotation 기반 엔드포인트 추출
+- `@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping`, `@RequestMapping`
+- `@PathVariable`, `@RequestParam`, `@RequestBody` 단순 추출
+
+## 참고
+
+- 파서는 정규식 기반이라 복잡한 시그니처/커스텀 패턴은 누락될 수 있습니다.
+- 필요하면 다음 단계로 OpenAPI(springdoc) 기반 정밀 동기화로 확장 가능합니다.
