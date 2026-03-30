@@ -999,7 +999,7 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 
 def cmd_connect(args: argparse.Namespace) -> None:
-    notion_token = resolve_setting(args.notion_token, "NOTION_TOKEN", "notion_token")
+    notion_token = resolve_setting(getattr(args, "notion_token", None), "NOTION_TOKEN", "notion_token")
     if not notion_token:
         print("[connect] no token found. starting login flow first...")
         cmd_login(args)
@@ -1009,12 +1009,12 @@ def cmd_connect(args: argparse.Namespace) -> None:
 
     client = NotionClient(notion_token)
 
-    page_keyword = args.page_query or prompt_optional("Page search keyword", "API")
+    page_keyword = getattr(args, "page_query", None) or prompt_optional("Page search keyword", "API")
     pages = client.search(page_keyword, "page", page_size=10)
     selected_page = pick_from_results("Select parent page to place API DB", pages)
     parent_page_id = (selected_page.get("id") or "").replace("-", "")
 
-    db_keyword = args.database_query or prompt_optional("Existing DB search keyword", "API Spec")
+    db_keyword = getattr(args, "database_query", None) or prompt_optional("Existing DB search keyword", "API Spec")
     existing_dbs = client.search(db_keyword, "database", page_size=10)
     use_existing = prompt_optional("Use existing DB if found? (y/n)", "y").lower() == "y"
     selected_db_id = ""
@@ -1023,7 +1023,7 @@ def cmd_connect(args: argparse.Namespace) -> None:
         selected_db = pick_from_results("Select existing database (or Ctrl+C to cancel)", existing_dbs)
         selected_db_id = (selected_db.get("id") or "").replace("-", "")
     else:
-        db_title = args.database_title or prompt_optional("New database title", "API Spec")
+        db_title = getattr(args, "database_title", None) or prompt_optional("New database title", "API Spec")
         created = client.create_database(parent_page_id, db_title)
         selected_db_id = created["id"].replace("-", "")
         print(f"[connect] created database: {selected_db_id}")
