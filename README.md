@@ -16,27 +16,20 @@ justfine-api-sync --help
 
 ## 한 번만 설정 (OAuth 로그인)
 
-### 1) Notion OAuth Integration 준비
+선행 설정 없이 바로 로그인 명령부터 실행해도 됩니다.
+`login`이 필요한 경우 Notion Integration 생성 페이지를 자동으로 열고, 터미널에서 값 입력을 받습니다.
 
-Notion에서 OAuth Integration을 만들고 아래 값을 준비하세요.
+```bash
+justfine-api-sync login
+# 또는
+justfine-api-sync /login
+```
 
-- `NOTION_CLIENT_ID`
-- `NOTION_CLIENT_SECRET`
-
-OAuth Redirect URI는 **반드시** 아래로 설정하세요.
+로그인 중 안내되는 Redirect URI는 아래로 맞추면 됩니다.
 
 - `http://127.0.0.1:8765/callback`
 
-### 2) 터미널에서 로그인
-
-```bash
-export NOTION_CLIENT_ID="your_client_id"
-export NOTION_CLIENT_SECRET="your_client_secret"
-
-justfine-api-sync login
-```
-
-그러면 브라우저가 열리고 권한 승인 후, 토큰이 로컬에 저장됩니다.
+인증 승인 후 토큰은 로컬에 저장됩니다.
 
 - 저장 위치: `~/.justfine/config.json`
 

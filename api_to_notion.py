@@ -23,6 +23,7 @@ NOTION_OAUTH_AUTHORIZE = "https://api.notion.com/v1/oauth/authorize"
 NOTION_OAUTH_TOKEN = "https://api.notion.com/v1/oauth/token"
 CONFIG_DIR = Path.home() / ".justfine"
 CONFIG_PATH = CONFIG_DIR / "config.json"
+NOTION_INTEGRATION_CREATE_URL = "https://www.notion.so/profile/integrations"
 
 
 @dataclass
@@ -161,6 +162,13 @@ def resolve_setting(cli_value: Optional[str], env_key: str, cfg_key: str) -> Opt
         return env
     cfg = load_config()
     return cfg.get(cfg_key)
+
+
+def prompt_secret(label: str) -> str:
+    value = input(f"{label}: ").strip()
+    if not value:
+        raise RuntimeError(f"{label} is required")
+    return value
 
 
 def normalize_path(base: str, sub: str) -> str:
@@ -547,7 +555,14 @@ def cmd_login(args: argparse.Namespace) -> None:
     redirect_uri = resolve_setting(args.redirect_uri, "NOTION_REDIRECT_URI", "redirect_uri") or "http://127.0.0.1:8765/callback"
 
     if not client_id or not client_secret:
-        raise RuntimeError("Missing client id/secret. Set NOTION_CLIENT_ID and NOTION_CLIENT_SECRET or pass flags.")
+        print("[login] first-time setup: open Notion integration page.")
+        print(f"[login] if needed, create OAuth integration here: {NOTION_INTEGRATION_CREATE_URL}")
+        webbrowser.open(NOTION_INTEGRATION_CREATE_URL)
+        print("[login] set Redirect URI to: http://127.0.0.1:8765/callback")
+        if not client_id:
+            client_id = prompt_secret("Paste NOTION_CLIENT_ID")
+        if not client_secret:
+            client_secret = prompt_secret("Paste NOTION_CLIENT_SECRET")
 
     parsed = urlparse(redirect_uri)
     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost") or not parsed.port:
@@ -684,7 +699,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = ap.add_subparsers(dest="command", required=True)
 
-    login = sub.add_parser("login", help="OAuth login via browser redirect")
+    login = sub.add_parser("login", aliases=["/login"], help="OAuth login via browser redirect")
     login.add_argument("--client-id", help="Notion OAuth client ID")
     login.add_argument("--client-secret", help="Notion OAuth client secret")
     login.add_argument("--redirect-uri", help="OAuth redirect URI (default: http://127.0.0.1:8765/callback)")
