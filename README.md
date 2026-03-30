@@ -2,22 +2,33 @@
 
 Spring 서버 코드를 읽어 Notion API 명세를 자동 동기화하는 CLI입니다.
 
-## 설치
+## 설치 (pipx 없이 바로)
 
 ```bash
-pipx install "git+https://github.com/parktaesu123/JustFine.git"
+python3 -m pip install --user "git+https://github.com/parktaesu123/JustFine.git"
 ```
 
 ## 가장 쉬운 시작
 
 ```bash
-justfine-api-sync connect
-justfine-api-sync sync --archive-missing
+python3 -m api_to_notion connect
+python3 -m api_to_notion sync --archive-missing
 ```
 
 그 다음부터는 이 한 줄이면 됩니다.
 
 ```bash
+python3 -m api_to_notion sync --archive-missing
+```
+
+## 설치 (pipx 사용 시)
+
+```bash
+pipx install "git+https://github.com/parktaesu123/JustFine.git"
+```
+
+```bash
+justfine-api-sync connect
 justfine-api-sync sync --archive-missing
 ```
 
@@ -34,9 +45,9 @@ justfine-api-sync sync --archive-missing
 ## 기타 명령
 
 ```bash
-justfine-api-sync /login
-justfine-api-sync init --parent-page-id "..." --database-title "API Spec"
-justfine-api-sync config
+python3 -m api_to_notion /login
+python3 -m api_to_notion init --parent-page-id "..." --database-title "API Spec"
+python3 -m api_to_notion config
 ```
 
 ## 참고
