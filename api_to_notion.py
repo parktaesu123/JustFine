@@ -884,6 +884,18 @@ def cmd_login(args: argparse.Namespace) -> None:
 
     if not client_id or not client_secret:
         mode = prompt_optional("Login mode (token/oauth)", "token").lower()
+        # If user pasted the actual ntn_ token at mode prompt, accept it directly.
+        if mode.startswith("ntn_"):
+            notion_token = mode
+            if not notion_token.startswith("ntn_"):
+                raise RuntimeError("Invalid NOTION_TOKEN format. It should start with 'ntn_'.")
+            update_config({"notion_token": notion_token, "updated_at": datetime.now(timezone.utc).isoformat()})
+            print("[login] token saved.")
+            if not getattr(args, "no_connect", False):
+                print("[login] starting database setup...")
+                cmd_connect(args)
+            return
+
         if mode in ("token", "t", "1", ""):
             notion_token = prompt_secret("Paste NOTION_TOKEN (ntn_...)")
             if not notion_token.startswith("ntn_"):
