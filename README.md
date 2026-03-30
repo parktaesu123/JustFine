@@ -43,6 +43,18 @@ justfine-api-sync connect
 justfine-api-sync sync --archive-missing
 ```
 
+내부 API 통합 토큰(`ntn_...`)을 이미 갖고 있으면 이렇게 실행:
+
+```bash
+justfine-api-sync connect --notion-token "실제_ntn_토큰_전체값"
+justfine-api-sync sync --archive-missing
+```
+
+주의:
+- `"ntn_...."` 같은 예시 문자열을 그대로 넣으면 `401 unauthorized`가 발생합니다.
+- `connect` 실행 중 `Page search keyword`는 토큰 입력칸이 아니라 Notion 페이지 검색어 입력칸입니다. (`API` 같은 키워드 입력)
+- 토큰이 노출되면 즉시 Notion에서 재발급(rotate)하세요.
+
 그 다음부터는 이 한 줄이면 됩니다.
 
 ```bash
@@ -77,6 +89,15 @@ python3 -m api_to_notion /login
 python3 -m api_to_notion init --parent-page-id "..." --database-title "API Spec"
 python3 -m api_to_notion config
 ```
+
+## 트러블슈팅
+
+- `API token is invalid (401)`:
+  - 토큰이 잘못됐거나 예시 문자열을 넣은 경우입니다.
+  - 실제 내부 통합 토큰(`ntn_...`) 전체를 넣어 다시 실행하세요.
+
+- `No Notion token found`:
+  - `connect`를 먼저 성공시키거나 `--notion-token` 인자로 전달하세요.
 
 ## 참고
 
