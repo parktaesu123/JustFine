@@ -132,6 +132,15 @@ class NotionClient:
     def archive_page(self, page_id: str) -> dict:
         return self._request("PATCH", f"/pages/{page_id}", {"archived": True})
 
+    def search(self, query: str, object_type: str, page_size: int = 10) -> List[dict]:
+        payload = {
+            "query": query,
+            "page_size": page_size,
+            "filter": {"property": "object", "value": object_type},
+        }
+        data = self._request("POST", "/search", payload)
+        return data.get("results", [])
+
 
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
@@ -169,6 +178,45 @@ def prompt_secret(label: str) -> str:
     if not value:
         raise RuntimeError(f"{label} is required")
     return value
+
+
+def prompt_optional(label: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{label}{suffix}: ").strip()
+    return value or default
+
+
+def pick_from_results(title: str, results: List[dict]) -> dict:
+    if not results:
+        raise RuntimeError("No results found. Try another keyword.")
+
+    print(f"[select] {title}")
+    for i, row in enumerate(results, start=1):
+        name = extract_notion_title(row)
+        rid = row.get("id", "").replace("-", "")
+        print(f"  {i}. {name} ({rid[:8]}...)")
+
+    while True:
+        raw = input("Choose number: ").strip()
+        if not raw.isdigit():
+            print("Enter a valid number.")
+            continue
+        idx = int(raw)
+        if 1 <= idx <= len(results):
+            return results[idx - 1]
+        print("Out of range. Try again.")
+
+
+def extract_notion_title(obj: dict) -> str:
+    if obj.get("object") == "page":
+        props = obj.get("properties", {})
+        for p in props.values():
+            if p.get("type") == "title":
+                return "".join(x.get("plain_text", "") for x in p.get("title", [])) or "Untitled"
+        return "Untitled"
+    if obj.get("object") == "database":
+        return "".join(x.get("plain_text", "") for x in obj.get("title", [])) or "Untitled DB"
+    return "Untitled"
 
 
 def normalize_path(base: str, sub: str) -> str:
@@ -640,6 +688,41 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("[init] saved database_id to ~/.justfine/config.json")
 
 
+def cmd_connect(args: argparse.Namespace) -> None:
+    notion_token = resolve_setting(args.notion_token, "NOTION_TOKEN", "notion_token")
+    if not notion_token:
+        print("[connect] no token found. starting login flow first...")
+        cmd_login(args)
+        notion_token = resolve_setting(args.notion_token, "NOTION_TOKEN", "notion_token")
+    if not notion_token:
+        raise RuntimeError("Login failed. Could not get Notion token.")
+
+    client = NotionClient(notion_token)
+
+    page_keyword = args.page_query or prompt_optional("Page search keyword", "API")
+    pages = client.search(page_keyword, "page", page_size=10)
+    selected_page = pick_from_results("Select parent page to place API DB", pages)
+    parent_page_id = (selected_page.get("id") or "").replace("-", "")
+
+    db_keyword = args.database_query or prompt_optional("Existing DB search keyword", "API Spec")
+    existing_dbs = client.search(db_keyword, "database", page_size=10)
+    use_existing = prompt_optional("Use existing DB if found? (y/n)", "y").lower() == "y"
+    selected_db_id = ""
+
+    if use_existing and existing_dbs:
+        selected_db = pick_from_results("Select existing database (or Ctrl+C to cancel)", existing_dbs)
+        selected_db_id = (selected_db.get("id") or "").replace("-", "")
+    else:
+        db_title = args.database_title or prompt_optional("New database title", "API Spec")
+        created = client.create_database(parent_page_id, db_title)
+        selected_db_id = created["id"].replace("-", "")
+        print(f"[connect] created database: {selected_db_id}")
+
+    update_config({"database_id": selected_db_id, "updated_at": datetime.now(timezone.utc).isoformat()})
+    print("[connect] completed. You can now run:")
+    print("  justfine-api-sync sync")
+
+
 def cmd_sync(args: argparse.Namespace) -> None:
     repo = Path(args.repo).expanduser().resolve()
     if not repo.exists():
@@ -706,6 +789,17 @@ def build_parser() -> argparse.ArgumentParser:
     login.add_argument("--timeout", type=int, default=180, help="OAuth wait timeout seconds")
     login.set_defaults(func=cmd_login)
 
+    connect = sub.add_parser("connect", help="Interactive one-shot setup (login + pick/create DB)")
+    connect.add_argument("--notion-token", help="Notion integration token")
+    connect.add_argument("--client-id", help="Notion OAuth client ID")
+    connect.add_argument("--client-secret", help="Notion OAuth client secret")
+    connect.add_argument("--redirect-uri", help="OAuth redirect URI (default: http://127.0.0.1:8765/callback)")
+    connect.add_argument("--timeout", type=int, default=180, help="OAuth wait timeout seconds")
+    connect.add_argument("--page-query", help="Keyword to find parent page")
+    connect.add_argument("--database-query", help="Keyword to find existing database")
+    connect.add_argument("--database-title", help="Title when creating a new database")
+    connect.set_defaults(func=cmd_connect)
+
     init = sub.add_parser("init", help="Create Notion API spec database and save database_id")
     init.add_argument("--notion-token", help="Notion integration token (optional if login done)")
     init.add_argument("--parent-page-id", required=True, help="Parent Notion page ID where DB will be created")
@@ -713,7 +807,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.set_defaults(func=cmd_init)
 
     sync = sub.add_parser("sync", help="Scan repo and sync API specs to Notion DB")
-    sync.add_argument("--repo", required=True, help="Path to source repository")
+    sync.add_argument("--repo", default=".", help="Path to source repository (default: current dir)")
     sync.add_argument("--database-id", help="Notion database ID")
     sync.add_argument("--notion-token", help="Notion integration token")
     sync.add_argument("--property-map", help="JSON file mapping logical fields to Notion property names")
