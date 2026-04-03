@@ -27,6 +27,19 @@ justfine-api-sync /sync --archive-missing
 justfine-api-sync /sync --archive-missing --force
 ```
 
+## 4) 자연어로 명세 포맷 변경 (AI)
+
+예시:
+
+```bash
+justfine-api-sync /ai "response에 httpStatus도 추가해줘"
+justfine-api-sync /sync --archive-missing --force
+```
+
+설명:
+- `/ai`가 요구사항을 해석해서 명세 포맷 프로필을 업데이트합니다.
+- 다음 `/sync`부터 반영됩니다.
+
 ## 생성되는 핵심 컬럼 (깔끔 모드)
 
 - `API Name`

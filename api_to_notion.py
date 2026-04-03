@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -25,6 +25,12 @@ NOTION_OAUTH_TOKEN = "https://api.notion.com/v1/oauth/token"
 CONFIG_DIR = Path.home() / ".justfine"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 NOTION_INTEGRATION_CREATE_URL = "https://www.notion.so/profile/integrations"
+DEFAULT_SPEC_PROFILE: Dict[str, bool] = {
+    "response_include_http_status": False,
+    "response_include_error_code": False,
+    "response_include_exception_name": False,
+    "request_include_headers": False,
+}
 
 
 def http_json(
@@ -194,6 +200,122 @@ def update_config(patch: dict) -> dict:
     cfg.update(patch)
     save_config(cfg)
     return cfg
+
+
+def get_spec_profile() -> Dict[str, bool]:
+    cfg = load_config()
+    saved = cfg.get("spec_profile", {})
+    profile = dict(DEFAULT_SPEC_PROFILE)
+    if isinstance(saved, dict):
+        for k, v in saved.items():
+            if k in profile:
+                profile[k] = bool(v)
+    return profile
+
+
+def save_spec_profile(profile: Dict[str, bool]) -> None:
+    merged = dict(DEFAULT_SPEC_PROFILE)
+    for k, v in profile.items():
+        if k in merged:
+            merged[k] = bool(v)
+    update_config({"spec_profile": merged, "updated_at": datetime.now(timezone.utc).isoformat()})
+
+
+def extract_first_json_object(text: str) -> Optional[dict]:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = text[start : end + 1]
+    try:
+        obj = json.loads(snippet)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
+def local_rule_profile_update(instruction: str, current: Dict[str, bool]) -> Dict[str, bool]:
+    ins = instruction.lower().strip()
+    out = dict(current)
+
+    def want_on(words: List[str]) -> bool:
+        return any(w in ins for w in words) and not any(x in ins for x in ["제외", "빼", "remove", "without", "없애"])
+
+    def want_off(words: List[str]) -> bool:
+        return any(w in ins for w in words) and any(x in ins for x in ["제외", "빼", "remove", "without", "없애"])
+
+    if want_on(["httpstatus", "http status", "상태코드", "status code"]):
+        out["response_include_http_status"] = True
+    if want_off(["httpstatus", "http status", "상태코드", "status code"]):
+        out["response_include_http_status"] = False
+
+    if want_on(["errorcode", "error code", "에러코드", "오류코드"]):
+        out["response_include_error_code"] = True
+    if want_off(["errorcode", "error code", "에러코드", "오류코드"]):
+        out["response_include_error_code"] = False
+
+    if want_on(["exception", "예외", "예외명"]):
+        out["response_include_exception_name"] = True
+    if want_off(["exception", "예외", "예외명"]):
+        out["response_include_exception_name"] = False
+
+    if want_on(["header", "헤더", "토큰포맷", "authorization format"]):
+        out["request_include_headers"] = True
+    if want_off(["header", "헤더", "토큰포맷", "authorization format"]):
+        out["request_include_headers"] = False
+
+    return out
+
+
+def openai_profile_update(instruction: str, current: Dict[str, bool]) -> Optional[Dict[str, bool]]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com").rstrip("/")
+    model = os.getenv("JUSTFINE_AI_MODEL", "gpt-4o-mini")
+    url = f"{base}/v1/chat/completions"
+    schema_keys = list(DEFAULT_SPEC_PROFILE.keys())
+    sys_prompt = (
+        "You map user's API spec formatting request into boolean toggles.\n"
+        f"Return JSON only with keys: {schema_keys}.\n"
+        "Do not include any extra keys."
+    )
+    user_prompt = (
+        f"Current profile: {json.dumps(current, ensure_ascii=False)}\n"
+        f"User request: {instruction}\n"
+        "Return updated profile JSON."
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        data = http_json("POST", url, headers=headers, json_payload=payload, timeout=30)
+    except Exception:
+        return None
+
+    choices = data.get("choices", [])
+    if not choices:
+        return None
+    content = (((choices[0] or {}).get("message") or {}).get("content") or "").strip()
+    parsed = extract_first_json_object(content)
+    if not parsed:
+        return None
+
+    updated = dict(current)
+    for k in DEFAULT_SPEC_PROFILE.keys():
+        if k in parsed:
+            updated[k] = bool(parsed[k])
+    return updated
 
 
 def resolve_setting(cli_value: Optional[str], env_key: str, cfg_key: str) -> Optional[str]:
@@ -623,29 +745,43 @@ def extract_plain_text(prop: dict) -> str:
     return ""
 
 
-def compact_request_text(ep: Endpoint) -> str:
+def compact_request_text(ep: Endpoint, profile: Dict[str, bool]) -> str:
     parts: List[str] = []
     if ep.params:
         parts.append(f"params={json.dumps(ep.params, ensure_ascii=False)}")
     if ep.request_body:
         parts.append(f"bodyType={ep.request_body}")
+    if profile.get("request_include_headers") and ep.headers:
+        parts.append(f"headers={json.dumps(ep.headers, ensure_ascii=False)}")
     if ep.request_schema and ep.request_schema != "{\"type\": \"none\"}":
         parts.append(f"schema={ep.request_schema}")
     return " | ".join(parts) if parts else "-"
 
 
-def compact_response_text(ep: Endpoint) -> str:
+def compact_response_text(ep: Endpoint, profile: Dict[str, bool]) -> str:
     parts: List[str] = []
     if ep.response:
         parts.append(f"type={ep.response}")
     if ep.response_schema and ep.response_schema != "{\"type\": \"void\"}":
         parts.append(f"schema={ep.response_schema}")
     if ep.exceptions:
-        parts.append(f"errors={json.dumps(ep.exceptions, ensure_ascii=False)}")
+        reduced: List[Dict[str, str]] = []
+        for ex in ep.exceptions:
+            item: Dict[str, str] = {}
+            if profile.get("response_include_exception_name") and ex.get("name"):
+                item["name"] = ex.get("name", "")
+            if profile.get("response_include_error_code") and ex.get("error_code"):
+                item["errorCode"] = ex.get("error_code", "")
+            if profile.get("response_include_http_status") and ex.get("http_status"):
+                item["httpStatus"] = ex.get("http_status", "")
+            if item:
+                reduced.append(item)
+        if reduced:
+            parts.append(f"errors={json.dumps(reduced, ensure_ascii=False)}")
     return " | ".join(parts) if parts else "-"
 
 
-def map_properties(ep: Endpoint, db_schema: dict, prop_names: Dict[str, str]) -> dict:
+def map_properties(ep: Endpoint, db_schema: dict, prop_names: Dict[str, str], profile: Dict[str, bool]) -> dict:
     now_iso = datetime.now(timezone.utc).isoformat()
     props = {}
 
@@ -654,8 +790,8 @@ def map_properties(ep: Endpoint, db_schema: dict, prop_names: Dict[str, str]) ->
         "title": [{"type": "text", "text": {"content": (ep.api_name or ep.endpoint_key)[:2000]}}]
     }
 
-    request_text = compact_request_text(ep)
-    response_text = compact_response_text(ep)
+    request_text = compact_request_text(ep, profile)
+    response_text = compact_response_text(ep, profile)
 
     mapping = {
         "API Name": ep.api_name,
@@ -778,6 +914,7 @@ def sync_to_notion(
     endpoints: List[Endpoint],
     archive_missing: bool,
     force_update: bool,
+    profile: Dict[str, bool],
 ) -> None:
     existing_rows = extract_existing_pages(client, database_id, aliases)
     by_endpoint_id = {r.endpoint_id: r for r in existing_rows if r.endpoint_id}
@@ -789,7 +926,7 @@ def sync_to_notion(
     skipped = 0
 
     for ep in endpoints:
-        props = map_properties(ep, db, aliases)
+        props = map_properties(ep, db, aliases, profile)
         row = by_endpoint_id.get(ep.stable_id) or by_title.get(ep.endpoint_key)
 
         if row:
@@ -1061,6 +1198,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
     client = NotionClient(notion_token)
     db = client.get_database(database_id)
     title_prop = find_title_property(db)
+    profile = get_spec_profile()
 
     aliases = build_default_property_aliases(db, title_prop)
     aliases.update(load_property_config(args.property_map))
@@ -1073,7 +1211,27 @@ def cmd_sync(args: argparse.Namespace) -> None:
         endpoints=endpoints,
         archive_missing=args.archive_missing,
         force_update=args.force,
+        profile=profile,
     )
+
+
+def cmd_ai(args: argparse.Namespace) -> None:
+    instruction = sanitize_user_text(args.instruction or "")
+    if not instruction:
+        instruction = prompt_optional("요구사항 입력", "")
+    if not instruction:
+        raise RuntimeError("Instruction is required.")
+
+    current = get_spec_profile()
+    updated = local_rule_profile_update(instruction, current)
+    ai_updated = None if args.local_only else openai_profile_update(instruction, updated)
+    if ai_updated:
+        updated = ai_updated
+
+    save_spec_profile(updated)
+    print("[ai] spec profile updated:")
+    print(json.dumps(updated, ensure_ascii=False, indent=2))
+    print("[ai] run: justfine-api-sync /sync --archive-missing --force")
 
 
 def cmd_config_show(_args: argparse.Namespace) -> None:
@@ -1132,6 +1290,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--archive-missing", action="store_true", help="Archive Notion rows no longer in code")
     sync.add_argument("--force", action="store_true", help="Force update all endpoints even if unchanged")
     sync.set_defaults(func=cmd_sync)
+
+    ai = sub.add_parser("ai", aliases=["/ai"], help="Apply natural-language spec format requirements")
+    ai.add_argument("instruction", nargs="?", help="Example: response에 httpStatus 추가해줘")
+    ai.add_argument("--local-only", action="store_true", help="Use local rule parser only (no remote AI call)")
+    ai.set_defaults(func=cmd_ai)
 
     config_show = sub.add_parser("config", help="Show saved local config")
     config_show.set_defaults(func=cmd_config_show)
