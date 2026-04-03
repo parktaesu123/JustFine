@@ -18,7 +18,14 @@ brew tap parktaesu123/justfine https://github.com/parktaesu123/JustFine.git
 brew install --HEAD parktaesu123/justfine/justfine-api-sync
 ```
 
-### 2. Notion 연결 (처음 1회)
+### 2. 가입/설정 안내 열기 (처음 1회, 선택)
+필요한 정보 얻는 페이지를 바로 엽니다.
+
+```bash
+justfine-api-sync /signup
+```
+
+### 3. Notion 연결 (처음 1회)
 Notion 내부 통합 토큰(`ntn_...`)을 준비한 뒤 실행:
 
 ```bash
@@ -33,7 +40,7 @@ justfine-api-sync /login --notion-token "실제_ntn_토큰"
 
 완료되면 `~/.justfine/config.json`에 연결 정보가 저장됩니다.
 
-### 3. 동기화 (매번 반복)
+### 4. 동기화 (매번 반복)
 서버 프로젝트 루트에서:
 
 ```bash

@@ -25,6 +25,7 @@ NOTION_OAUTH_TOKEN = "https://api.notion.com/v1/oauth/token"
 CONFIG_DIR = Path.home() / ".justfine"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 NOTION_INTEGRATION_CREATE_URL = "https://www.notion.so/profile/integrations"
+JUSTFINE_SIGNUP_URL = os.getenv("JUSTFINE_SIGNUP_URL", "https://github.com/parktaesu123/JustFine#readme")
 DEFAULT_SPEC_PROFILE: Dict[str, bool] = {
     "response_include_http_status": False,
     "response_include_error_code": False,
@@ -1248,6 +1249,15 @@ def cmd_config_show(_args: argparse.Namespace) -> None:
     print(json.dumps(redacted, ensure_ascii=False, indent=2))
 
 
+def cmd_signup(_args: argparse.Namespace) -> None:
+    print("[signup] opening onboarding page...")
+    opened = webbrowser.open(JUSTFINE_SIGNUP_URL)
+    if not opened:
+        print("[signup] open this URL manually:")
+    print(JUSTFINE_SIGNUP_URL)
+    print("[signup] next: justfine-api-sync /login --notion-token \"실제_ntn_토큰\"")
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="justfine-api-sync",
@@ -1295,6 +1305,9 @@ def build_parser() -> argparse.ArgumentParser:
     ai.add_argument("instruction", nargs="?", help="Example: response에 httpStatus 추가해줘")
     ai.add_argument("--local-only", action="store_true", help="Use local rule parser only (no remote AI call)")
     ai.set_defaults(func=cmd_ai)
+
+    signup = sub.add_parser("signup", aliases=["/signup"], help="Open onboarding page to get required setup info")
+    signup.set_defaults(func=cmd_signup)
 
     config_show = sub.add_parser("config", help="Show saved local config")
     config_show.set_defaults(func=cmd_config_show)
