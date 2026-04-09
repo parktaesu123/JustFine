@@ -1,5 +1,5 @@
 class JustfineApiSync < Formula
-  desc "Sync Spring API specs to Notion"
+  desc "Sync backend API specs from multiple frameworks to Notion"
   homepage "https://github.com/parktaesu123/JustFine"
   head "https://github.com/parktaesu123/JustFine.git", branch: "main"
 
@@ -7,6 +7,7 @@ class JustfineApiSync < Formula
 
   def install
     libexec.install "api_to_notion.py"
+    libexec.install "justfine"
     (bin/"justfine-api-sync").write <<~EOS
       #!/bin/bash
       exec /usr/bin/env python3 "#{libexec}/api_to_notion.py" "$@"

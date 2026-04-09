@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import webbrowser
@@ -17,6 +18,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+
+from justfine.core.engine import SyncEngine
+from justfine.output.notion_adapter import NotionOutputAdapter
+from justfine.parsers.factory import create_parser, get_available_frameworks
 
 NOTION_VERSION = "2022-06-28"
 NOTION_API_BASE = "https://api.notion.com/v1"
@@ -1188,31 +1193,40 @@ def cmd_sync(args: argparse.Namespace) -> None:
     if not database_id:
         raise RuntimeError("No database id found. Run 'justfine-api-sync init' or pass --database-id.")
 
-    endpoints = parse_java_endpoints(repo)
-    print(f"[scan] found endpoints: {len(endpoints)}")
+    try:
+        parser = create_parser(args.framework)
+    except ValueError as e:
+        raise RuntimeError(str(e)) from e
+    specs = parser.extract_endpoints(repo)
+    print(f"[scan] framework={args.framework} endpoints={len(specs)}")
 
     if args.dry_run:
-        for ep in endpoints:
-            print("[dry-run]", json.dumps(asdict(ep), ensure_ascii=False))
+        for spec in specs:
+            print("[dry-run]", json.dumps(spec, ensure_ascii=False))
         return
 
     client = NotionClient(notion_token)
-    db = client.get_database(database_id)
-    title_prop = find_title_property(db)
     profile = get_spec_profile()
+    property_map = load_property_config(args.property_map)
 
-    aliases = build_default_property_aliases(db, title_prop)
-    aliases.update(load_property_config(args.property_map))
-
-    sync_to_notion(
+    adapter = NotionOutputAdapter(
         client=client,
         database_id=database_id,
-        db=db,
-        aliases=aliases,
-        endpoints=endpoints,
+        spec_profile=profile,
+        property_map=property_map,
+    )
+    engine = SyncEngine()
+    result = engine.sync(
+        specs=specs,
+        output=adapter,
         archive_missing=args.archive_missing,
         force_update=args.force,
-        profile=profile,
+    )
+
+    print(
+        "[done]"
+        f" created={result.created}, updated={result.updated},"
+        f" skipped={result.skipped}, archived={result.archived}"
     )
 
 
@@ -1261,7 +1275,7 @@ def cmd_signup(_args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="justfine-api-sync",
-        description="Install-style CLI: login to Notion, init DB, and sync Spring API specs",
+        description="Install-style CLI: login to Notion, init DB, and sync backend API specs",
     )
     sub = ap.add_subparsers(dest="command", required=True)
 
@@ -1293,6 +1307,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync = sub.add_parser("sync", aliases=["/sync"], help="Scan repo and sync API specs to Notion DB")
     sync.add_argument("--repo", default=".", help="Path to source repository (default: current dir)")
+    available_frameworks = ", ".join(get_available_frameworks())
+    sync.add_argument(
+        "--framework",
+        default="spring",
+        help=f"Backend framework parser (available: {available_frameworks})",
+    )
     sync.add_argument("--database-id", help="Notion database ID")
     sync.add_argument("--notion-token", help="Notion integration token")
     sync.add_argument("--property-map", help="JSON file mapping logical fields to Notion property names")
@@ -1318,7 +1338,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

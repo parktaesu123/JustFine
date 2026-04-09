@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "justfine-api-sync"
 version = "0.1.0"
-description = "Sync Spring API specs to Notion database"
+description = "Sync backend API specs from multiple frameworks to Notion database"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
@@ -15,3 +15,4 @@ justfine-api-sync = "api_to_notion:main"
 
 [tool.setuptools]
 py-modules = ["api_to_notion"]
+packages = ["justfine", "justfine.parsers", "justfine.core", "justfine.output"]
